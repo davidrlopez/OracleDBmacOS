@@ -1,45 +1,86 @@
 # Oracle Database 23c Free on macOS (Apple Silicon & Intel)
 
-A comprehensive guide to running Oracle Database 23c Free natively on macOS using **Colima** and **Docker**, fully supporting Apple Silicon (M1/M2/M3/M4) via Rosetta 2 emulation.
+A complete guide to running Oracle Database 23c Free locally on macOS using Colima and Docker, with full support for Apple Silicon (M1/M2/M3/M4) via Rosetta 2 emulation.
 
 ## The Problem
-Oracle does not provide a native ARM64 Docker image for their databases. Running Oracle DB on modern Macs via standard Docker Desktop often leads to architecture mismatch errors (`linux/amd64` vs `linux/arm64`) or heavy performance degradation. 
+
+Oracle does not provide a native ARM64 Docker image for their databases. Running Oracle DB on modern Macs via standard Docker Desktop often leads to architecture mismatch errors (`linux/amd64` vs `linux/arm64`) or significant performance degradation.
 
 ## The Solution
-We bypass this limitation by using **Colima**, a lightweight container runtime for macOS. By configuring Colima to use Apple's Virtualization Framework and Rosetta 2, we can seamlessly emulate the `x86_64` architecture required by the Oracle image with near-native performance.
+
+This guide uses [Colima](https://github.com/abiosoft/colima), a lightweight container runtime for macOS. By configuring Colima to use Apple's Virtualization Framework with Rosetta 2, we emulate the `x86_64` architecture required by the Oracle image with near-native performance — no Docker Desktop required.
 
 ---
 
 ## Prerequisites
 
-You only need **Homebrew** installed. If you don't have it, open your terminal and run:
+- macOS Sequoia or later (Apple Silicon or Intel)
+- At least 8 GB RAM recommended (3.5 GB minimum allocated to the VM)
+- [Homebrew](https://brew.sh) — all dependencies are installed through it
+- [Oracle Container Registry](https://container-registry.oracle.com) account — required to pull the official image
+- A SQL client: [SQL Developer](https://www.oracle.com/database/sqldeveloper/), [DBeaver](https://dbeaver.io), or `sqlcl`
+
+If you do not have Homebrew installed:
+
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
-## Step-by-Step Installation
+---
 
-### 1. Install and Configure Colima
+## Installation
 
-First, install Colima via Homebrew:
+### 1. Install Colima and Docker CLI
+
 ```bash
-brew install colima
+brew install colima docker
 ```
 
-Next, start Colima with the specific parameters needed for Oracle DB. We specify the `x86_64` architecture, enable Rosetta 2 emulation, and allocate the minimum required RAM (3GB).
+### 2. Start Colima with x86_64 Emulation
+
+Oracle Database 23c Free is only available as a Linux x86_64 image. Colima must be started with Rosetta-based emulation to run it on Apple Silicon.
+
 ```bash
-colima start --arch x86_64 --vm-type=vz --vz-rosetta --mount-type=virtiofs --memory 3
+colima start \
+  --arch x86_64 \
+  --vm-type vz \
+  --vz-rosetta \
+  --mount-type virtiofs \
+  --memory 3
 ```
-*Note: To verify Colima is running correctly, you can use the command `colima status`.*
 
-### 2. Pull and Run Oracle Database 23c
+| Flag | Description |
+|---|---|
+| `--arch x86_64` | Emulates x86_64 architecture via Rosetta 2 |
+| `--vm-type vz` | Uses macOS Virtualization Framework |
+| `--vz-rosetta` | Enables Rosetta 2 translation layer |
+| `--mount-type virtiofs` | High-performance file sharing between host and VM |
+| `--memory 3` | Allocates 3 GB RAM to the VM (minimum required) |
 
-Pull the official Oracle Database 23c Free image:
+Verify Colima is running correctly:
+
+```bash
+colima status
+```
+
+Expected output should confirm `arch: x86_64` and `runtime: docker`.
+
+### 3. Pull Oracle Database 23c Free
+
+Log in to the Oracle Container Registry. An Oracle account is required:
+
+```bash
+docker login container-registry.oracle.com
+```
+
+Pull the official image (~9.5 GB):
+
 ```bash
 docker pull container-registry.oracle.com/database/free
 ```
 
-Run the container. We map port `1521` for database connections and set up a volume to persist data locally.
+### 4. Run the Container
+
 ```bash
 docker run -d \
   --name ora23c \
@@ -47,13 +88,21 @@ docker run -d \
   --mount source=oradata,target=/opt/oracle/oradata \
   container-registry.oracle.com/database/free
 ```
-*Note: If port 1521 is already in use on your machine, you can change the mapping to `-p 1522:1521`.*
 
-### 3. Set the Database Password
+> If port 1521 is already in use on your machine, change the mapping to `-p 1522:1521` and use port `1522` in your client.
 
-Wait a few moments for the database to initialize (you can check logs with `docker logs -f ora23c` looking for "Database ready to use").
+Monitor the logs and wait for the database to be ready:
 
-Once ready, access the container to set your sysadmin password (replace `YourStrongPassword123` with your desired password):
+```bash
+docker logs -f ora23c
+```
+
+Wait for the message: `DATABASE IS READY TO USE!`
+
+### 5. Set the Database Password
+
+Replace `YourStrongPassword123` with your desired password:
+
 ```bash
 docker exec -it ora23c ./setPassword.sh YourStrongPassword123
 ```
@@ -62,44 +111,93 @@ docker exec -it ora23c ./setPassword.sh YourStrongPassword123
 
 ## Connecting to the Database
 
-You can now connect to your locally hosted Oracle database using your preferred client (e.g., **SQL Developer**, **DBeaver**, or **sqlcl**).
+Use any Oracle-compatible client (SQL Developer, DBeaver, sqlcl) with the following parameters:
 
-**Connection Details:**
-- **Hostname:** `localhost`
-- **Port:** `1521` (or `1522` if you changed the mapping)
-- **Service Name (SID):** `FREE`
-- **Username:** `SYS`
-- **Role:** `SYSDBA`
-- **Password:** The password you set in Step 3.
+| Field | Value |
+|---|---|
+| Hostname | `localhost` |
+| Port | `1521` (or `1522` if you changed the mapping) |
+| Service Name / SID | `FREE` |
+| Username | `SYS` |
+| Role | `SYSDBA` |
+| Password | The password set in step 5 |
 
-### Altering the Session (Required for new users)
-When connected as `SYS`, before creating new user schemas, you must alter the session:
+### Creating a Working Schema
+
+When connected as `SYS`, alter the session before creating users:
+
 ```sql
 ALTER SESSION SET "_ORACLE_SCRIPT"=true;
 ```
 
-Then you can create a standard user:
+Create a new user (identifiers must be in **UPPERCASE** to avoid connection errors):
+
 ```sql
 CREATE USER MY_USER IDENTIFIED BY "MyPassword123"
-DEFAULT TABLESPACE "USERS"
-TEMPORARY TABLESPACE "TEMP"
-QUOTA 20M ON "USERS";
+  DEFAULT TABLESPACE "USERS"
+  TEMPORARY TABLESPACE "TEMP"
+  QUOTA 20M ON "USERS";
 
 GRANT ALL PRIVILEGES TO MY_USER;
 ```
-*Note: Ensure the username is written in **UPPERCASE** to avoid connection errors later.*
+
+Reconnect using the new user credentials to work within your schema.
 
 ---
 
-## Managing the Server
+## Daily Usage
 
-To stop the server and free up resources:
+### Start
+
+```bash
+colima start \
+  --arch x86_64 \
+  --vm-type vz \
+  --vz-rosetta \
+  --mount-type virtiofs \
+  --memory 3
+
+docker start ora23c
+```
+
+### Stop
+
 ```bash
 colima stop
 ```
 
-To start it again:
+> Stopping Colima also stops all running containers. Database data is persisted in the `oradata` Docker volume and will be available on the next start.
+
+---
+
+## Troubleshooting
+
+**Connection refused on port 1521 / 1522**
+The database may still be initializing. Run `docker logs -f ora23c` and wait for `DATABASE IS READY TO USE!`.
+
+**ORA-01017: invalid credential**
+Ensure the username is in uppercase. Oracle identifiers are case-sensitive when quoted.
+
+**Architecture mismatch error on `docker pull`**
+Colima may not be running with the correct architecture. Verify with `colima status` that `arch: x86_64` is set.
+
+**Colima fails to start**
+Ensure Rosetta 2 is installed:
+
 ```bash
-colima start
-docker start ora23c
+softwareupdate --install-rosetta
 ```
+
+**Container exits immediately**
+The VM may not have enough memory. Try increasing `--memory` to `4` or higher.
+
+---
+
+## References
+
+- [Colima — GitHub](https://github.com/abiosoft/colima)
+- [Oracle Database Free — Container Registry](https://container-registry.oracle.com/ords/ocr/ba/database/free)
+- [Oracle SQL Developer — Download](https://www.oracle.com/database/sqldeveloper/)
+- [DBeaver — Download](https://dbeaver.io)
+- [Homebrew](https://brew.sh)
+- [Rosetta 2 — Apple Support](https://support.apple.com/en-us/102527)
